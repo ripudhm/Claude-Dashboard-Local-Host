@@ -1,0 +1,5 @@
+venv/
+data.db
+secrets.py
+__pycache__/
+*.pyc
