@@ -1,9 +1,16 @@
+import asyncio
+import logging
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from config import GROUPS
-from db import get_connection, ensure_table, fetch_latest
+from db import get_connection, ensure_table, fetch_latest, get_sync_state
+from telegram_sync import sync_messages
+
+log = logging.getLogger("server")
+SYNC_INTERVAL_SECONDS = 6 * 60 * 60
 
 app = FastAPI(title="Telegram Group Dashboard")
 
@@ -28,6 +35,23 @@ def list_groups():
     ]
 
 
+@app.post("/api/sync")
+async def manual_sync():
+    """Triggered by the dashboard's Refresh button -- checks Telegram immediately."""
+    await sync_messages()
+    return {"status": "ok"}
+
+
+@app.get("/api/status")
+def sync_status():
+    conn = get_connection()
+    try:
+        state = get_sync_state(conn)
+    finally:
+        conn.close()
+    return {"last_synced_at": state.get("last_synced_at")}
+
+
 @app.get("/api/{table}")
 def get_latest(table: str, limit: int = 15):
     if table not in TABLE_LOOKUP:
@@ -40,6 +64,21 @@ def get_latest(table: str, limit: int = 15):
     finally:
         conn.close()
     return rows
+
+
+@app.on_event("startup")
+async def start_background_sync():
+    await sync_messages()
+
+    async def sync_loop():
+        while True:
+            await asyncio.sleep(SYNC_INTERVAL_SECONDS)
+            try:
+                await sync_messages()
+            except Exception:
+                log.exception("Scheduled Telegram sync failed")
+
+    asyncio.create_task(sync_loop())
 
 
 # Serve the dashboard UI itself at "/"

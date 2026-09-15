@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Group Feed</title>
+<title>LAF Dashboard</title>
 <style>
   :root {
     --bg: #10151C;
@@ -29,6 +29,13 @@
     border-bottom: 1px solid var(--border);
   }
 
+  header .header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
   header h1 {
     margin: 0;
     font-size: 20px;
@@ -40,6 +47,33 @@
     margin: 6px 0 0;
     color: var(--muted);
     font-size: 13px;
+  }
+
+  header .last-checked-line {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  #refresh-btn {
+    flex-shrink: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 12.5px;
+    font-weight: 500;
+    padding: 7px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  #refresh-btn:hover {
+    border-color: var(--accent);
+  }
+
+  #refresh-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
 
   main {
@@ -135,14 +169,17 @@
 <body>
 
 <header>
-  <h1><span class="pulse"></span>group feed</h1>
+  <div class="header-row">
+    <h1><span class="pulse"></span>LAF Dashboard</h1>
+    <button id="refresh-btn">Refresh</button>
+  </div>
   <p>latest activity across configured telegram groups</p>
+  <p class="last-checked-line">last checked: <span id="last-checked">&ndash;</span></p>
 </header>
 
 <main id="panels"></main>
 
 <script>
-const REFRESH_MS = 10000;
 const ROW_LIMIT = 15;
 
 async function loadGroups() {
@@ -156,21 +193,30 @@ async function loadRows(table) {
   return res.json();
 }
 
-function formatTime(ts) {
+async function loadStatus() {
+  const res = await fetch('/api/status');
+  if (!res.ok) return null;
+  return res.json();
+}
+
+function formatTimestamp(ts) {
   if (!ts) return '';
   const d = new Date(ts.replace(' ', 'T') + 'Z');
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return d.toLocaleString([], {
+    month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit'
+  });
 }
 
 function renderPanel(group, rows) {
   const cols = [...group.columns, 'sender', 'timestamp'];
 
-  const headCells = cols.map(c => `<th>${c}</th>`).join('');
+  const headCells = cols.map(c => `<th>${c === 'timestamp' ? 'date & time' : c}</th>`).join('');
 
   const bodyRows = rows.length
     ? rows.map(row => {
         const cells = cols.map(c =>
-          `<td title="${row[c] ?? ''}">${c === 'timestamp' ? formatTime(row[c]) : (row[c] ?? '')}</td>`
+          `<td title="${row[c] ?? ''}">${c === 'timestamp' ? formatTimestamp(row[c]) : (row[c] ?? '')}</td>`
         ).join('');
         return `<tr>${cells}</tr>`;
       }).join('')
@@ -191,8 +237,10 @@ function renderPanel(group, rows) {
   `;
 }
 
+let lastKnownSync = null;
+
 async function refresh() {
-  const groups = await loadGroups();
+  const [groups, status] = await Promise.all([loadGroups(), loadStatus()]);
   const panelsEl = document.getElementById('panels');
 
   const html = await Promise.all(groups.map(async g => {
@@ -201,10 +249,35 @@ async function refresh() {
   }));
 
   panelsEl.innerHTML = html.join('');
+
+  lastKnownSync = status ? status.last_synced_at : null;
+  const lastCheckedEl = document.getElementById('last-checked');
+  lastCheckedEl.textContent = lastKnownSync ? formatTimestamp(lastKnownSync) : 'never';
 }
 
+// Lightweight poll: only pulls the (tiny) sync status, and only reloads the
+// full data if the backend's 6-hourly check actually found something new.
+const STATUS_POLL_MS = 60 * 1000;
+
+async function pollForUpdates() {
+  const status = await loadStatus();
+  if (status && status.last_synced_at && status.last_synced_at !== lastKnownSync) {
+    await refresh();
+  }
+}
+
+const refreshBtn = document.getElementById('refresh-btn');
+refreshBtn.addEventListener('click', async () => {
+  refreshBtn.disabled = true;
+  refreshBtn.textContent = 'Refreshing…';
+  await fetch('/api/sync', { method: 'POST' });
+  await refresh();
+  refreshBtn.textContent = 'Refresh';
+  refreshBtn.disabled = false;
+});
+
 refresh();
-setInterval(refresh, REFRESH_MS);
+setInterval(pollForUpdates, STATUS_POLL_MS);
 </script>
 
 </body>
