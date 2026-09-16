@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from telegram import Bot
 
-from config import BOT_TOKEN, GROUPS
+from config import BOT_TOKEN, GROUPS, all_columns
 from db import get_connection, ensure_table, insert_row, get_sync_state, set_sync_state
 from parser import parse_message
 
@@ -30,14 +30,20 @@ async def sync_messages():
             if not group:
                 continue
 
-            fields = parse_message(message.text, group["columns"])
+            fields = parse_message(message.text, group["columns"], group.get("separator", ","))
             if not fields:
                 continue
+
+            for col_name, formula in group.get("computed", {}).items():
+                try:
+                    fields[col_name] = formula(fields)
+                except Exception:
+                    log.warning("Could not compute %s for %s: %s", col_name, group["table"], fields)
 
             sender = message.from_user.username or message.from_user.first_name
             sent_at = message.date.strftime("%Y-%m-%d %H:%M:%S")
 
-            ensure_table(conn, group["table"], group["columns"])
+            ensure_table(conn, group["table"], all_columns(group))
             insert_row(conn, group["table"], fields, sender, sent_at)
             log.info("Saved to %s: %s (from %s)", group["table"], fields, sender)
 

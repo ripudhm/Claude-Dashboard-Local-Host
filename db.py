@@ -9,7 +9,8 @@ def get_connection():
 
 
 def ensure_table(conn, table, columns):
-    """Create the table for a group if it doesn't exist yet."""
+    """Create the table for a group if it doesn't exist yet, and add any
+    newly configured columns to a table that already exists."""
     cols_sql = ", ".join(f'"{c}" TEXT' for c in columns)
     conn.execute(f"""
         CREATE TABLE IF NOT EXISTS "{table}" (
@@ -19,6 +20,12 @@ def ensure_table(conn, table, columns):
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    existing = {row["name"] for row in conn.execute(f'PRAGMA table_info("{table}")')}
+    for c in columns:
+        if c not in existing:
+            conn.execute(f'ALTER TABLE "{table}" ADD COLUMN "{c}" TEXT')
+
     conn.commit()
 
 

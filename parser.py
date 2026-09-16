@@ -1,4 +1,4 @@
-def parse_message(text, expected_columns):
+def parse_message(text, expected_columns, separator=","):
     """
     Parses messages formatted like:
         "Item: Widget, Price: 20, Customer: Jane"
@@ -11,7 +11,7 @@ def parse_message(text, expected_columns):
         return None
 
     fields = {}
-    for part in text.split(","):
+    for part in text.split(separator):
         if ":" not in part:
             continue
         key, val = part.split(":", 1)

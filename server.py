@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from config import GROUPS
+from config import GROUPS, all_columns
 from db import get_connection, ensure_table, fetch_latest, get_sync_state
 from telegram_sync import sync_messages
 
@@ -21,16 +21,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# table -> columns, built once from config so the frontend knows what
-# every group's shape is without guessing.
-TABLE_LOOKUP = {g["table"]: g["columns"] for g in GROUPS.values()}
+# table -> columns (including computed ones), built once from config so the
+# frontend knows what every group's shape is without guessing.
+TABLE_LOOKUP = {g["table"]: all_columns(g) for g in GROUPS.values()}
 
 
 @app.get("/api/groups")
 def list_groups():
-    """Every configured group, its table name, and its columns."""
+    """Every configured group, its table name, and its columns (including computed ones)."""
     return [
-        {"table": g["table"], "columns": g["columns"]}
+        {"table": g["table"], "columns": all_columns(g), "show_sender": g.get("show_sender", True)}
         for g in GROUPS.values()
     ]
 

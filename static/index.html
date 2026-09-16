@@ -109,6 +109,23 @@
     font-family: "SF Mono", ui-monospace, Menlo, monospace;
   }
 
+  summary.panel-head {
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .chevron {
+    display: inline-block;
+    margin-right: 6px;
+    font-size: 10px;
+    color: var(--muted);
+    transition: transform 0.15s ease;
+  }
+
+  details[open] .chevron {
+    transform: rotate(90deg);
+  }
+
   table {
     width: 100%;
     border-collapse: collapse;
@@ -164,6 +181,89 @@
   @media (prefers-reduced-motion: reduce) {
     .pulse { animation: none; }
   }
+
+  .chart-panel {
+    grid-column: 1 / -1;
+    padding: 14px 16px 16px;
+  }
+
+  .chart-wrap {
+    position: relative;
+  }
+
+  .chart-svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    overflow: visible;
+  }
+
+  .chart-svg:focus {
+    outline: none;
+  }
+
+  .chart-grid {
+    stroke: var(--border);
+    stroke-width: 1;
+  }
+
+  .chart-tick {
+    font-size: 10.5px;
+    font-family: "SF Mono", ui-monospace, Menlo, monospace;
+    fill: var(--muted);
+  }
+
+  .chart-line {
+    stroke: var(--accent);
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .chart-dot-ring {
+    fill: var(--surface);
+  }
+
+  .chart-dot {
+    fill: var(--accent);
+  }
+
+  .chart-end-label {
+    fill: var(--text);
+    font-size: 12px;
+    font-weight: 600;
+    font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  }
+
+  .chart-crosshair {
+    stroke: var(--muted);
+    stroke-width: 1;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .chart-tooltip {
+    position: absolute;
+    transform: translate(-50%, -100%) translateY(-10px);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+
+  .chart-tooltip-date {
+    color: var(--muted);
+    margin-right: 8px;
+  }
+
+  .chart-tooltip-value {
+    color: var(--text);
+    font-weight: 600;
+    font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  }
 </style>
 </head>
 <body>
@@ -180,7 +280,7 @@
 <main id="panels"></main>
 
 <script>
-const ROW_LIMIT = 15;
+const ROW_LIMIT = 30;
 
 async function loadGroups() {
   const res = await fetch('/api/groups');
@@ -209,7 +309,7 @@ function formatTimestamp(ts) {
 }
 
 function renderPanel(group, rows) {
-  const cols = [...group.columns, 'sender', 'timestamp'];
+  const cols = [...group.columns, ...(group.show_sender === false ? [] : ['sender']), 'timestamp'];
 
   const headCells = cols.map(c => `<th>${c === 'timestamp' ? 'date & time' : c}</th>`).join('');
 
@@ -227,28 +327,209 @@ function renderPanel(group, rows) {
     : `<div class="empty">no messages yet</div>`;
 
   return `
-    <section class="panel">
-      <div class="panel-head">
-        <h2>${group.table}</h2>
+    <details class="panel" data-table="${group.table}">
+      <summary class="panel-head">
+        <h2><span class="chevron">&#9656;</span>${group.table}</h2>
         <span class="meta">${rows.length} shown</span>
-      </div>
+      </summary>
       ${body}
-    </section>
+    </details>
   `;
 }
+
+function toChartPoints(rows, field) {
+  return rows
+    .map(r => ({ t: new Date(r.timestamp.replace(' ', 'T') + 'Z'), v: parseFloat(r[field]) }))
+    .filter(p => !isNaN(p.v) && !isNaN(p.t.getTime()));
+}
+
+function chartGeometry(points) {
+  const W = 720, H = 240;
+  const padL = 34, padR = 20, padT = 16, padB = 26;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const xs = points.map(p => p.t.getTime());
+  const xMin = Math.min(...xs), xMax = Math.max(...xs);
+  const xSpan = Math.max(xMax - xMin, 1);
+  const yMin = 0, yMax = 100;
+  return {
+    W, H, padL, padR, padT, padB, plotW, plotH,
+    xFor: t => padL + ((t - xMin) / xSpan) * plotW,
+    yFor: v => padT + (1 - (v - yMin) / (yMax - yMin)) * plotH,
+  };
+}
+
+function renderChart(rows, field, label, chartId) {
+  const points = toChartPoints(rows, field);
+
+  if (points.length < 2) {
+    return `
+      <section class="panel chart-panel">
+        <div class="panel-head"><h2>${label} over time</h2></div>
+        <div class="empty">not enough data yet</div>
+      </section>`;
+  }
+
+  const { W, H, padL, padR, padT, padB, xFor, yFor } = chartGeometry(points);
+
+  const yTicks = [0, 25, 50, 75, 100];
+  const gridLines = yTicks.map(t => {
+    const y = yFor(t).toFixed(1);
+    return `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" class="chart-grid" />
+      <text x="${padL - 6}" y="${y}" class="chart-tick" text-anchor="end" dominant-baseline="middle">${t}</text>`;
+  }).join('');
+
+  const linePath = points.map((p, i) =>
+    `${i === 0 ? 'M' : 'L'} ${xFor(p.t.getTime()).toFixed(1)} ${yFor(p.v).toFixed(1)}`
+  ).join(' ');
+
+  const dots = points.map(p => {
+    const x = xFor(p.t.getTime()).toFixed(1);
+    const y = yFor(p.v).toFixed(1);
+    return `<circle cx="${x}" cy="${y}" r="6" class="chart-dot-ring" />
+      <circle cx="${x}" cy="${y}" r="4" class="chart-dot" />`;
+  }).join('');
+
+  const tickIdxs = points.length <= 4
+    ? points.map((_, i) => i)
+    : [0, Math.floor((points.length - 1) / 2), points.length - 1];
+  const xTicks = tickIdxs.map((i, idx) => {
+    const p = points[i];
+    const x = xFor(p.t.getTime()).toFixed(1);
+    const anchor = idx === 0 ? 'start' : idx === tickIdxs.length - 1 ? 'end' : 'middle';
+    const tickLabel = p.t.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    return `<text x="${x}" y="${H - padB + 16}" class="chart-tick" text-anchor="${anchor}">${tickLabel}</text>`;
+  }).join('');
+
+  const last = points[points.length - 1];
+  const lastX = xFor(last.t.getTime()).toFixed(1);
+  const lastY = yFor(last.v).toFixed(1);
+
+  return `
+    <section class="panel chart-panel">
+      <div class="panel-head">
+        <h2>${label} over time</h2>
+        <span class="meta">${points.length} points</span>
+      </div>
+      <div class="chart-wrap" id="${chartId}-wrap">
+        <svg viewBox="0 0 ${W} ${H}" class="chart-svg" tabindex="0"
+             role="img" aria-label="${label} over time, most recent value ${last.v.toFixed(2)} percent">
+          ${gridLines}
+          <line class="chart-crosshair" id="${chartId}-crosshair" x1="0" y1="${padT}" x2="0" y2="${H - padB}" />
+          <path d="${linePath}" class="chart-line" fill="none" />
+          ${dots}
+          <text x="${lastX}" y="${Math.max(parseFloat(lastY) - 10, 10)}" class="chart-end-label" text-anchor="end">${last.v.toFixed(2)}%</text>
+          ${xTicks}
+        </svg>
+        <div class="chart-tooltip" id="${chartId}-tooltip" hidden>
+          <span class="chart-tooltip-date"></span><span class="chart-tooltip-value"></span>
+        </div>
+      </div>
+    </section>`;
+}
+
+function initChartInteraction(chartId, points) {
+  const wrap = document.getElementById(`${chartId}-wrap`);
+  if (!wrap) return;
+  const svg = wrap.querySelector('svg');
+  const crosshair = document.getElementById(`${chartId}-crosshair`);
+  const tooltip = document.getElementById(`${chartId}-tooltip`);
+  const geo = chartGeometry(points);
+  let focusIdx = points.length - 1;
+
+  function nearestPoint(clientX) {
+    const rect = svg.getBoundingClientRect();
+    const svgX = (clientX - rect.left) * (geo.W / rect.width);
+    let closest = points[0], closestDist = Infinity, closestIdx = 0;
+    points.forEach((p, i) => {
+      const d = Math.abs(geo.xFor(p.t.getTime()) - svgX);
+      if (d < closestDist) { closestDist = d; closest = p; closestIdx = i; }
+    });
+    focusIdx = closestIdx;
+    return closest;
+  }
+
+  function showFor(p) {
+    const x = geo.xFor(p.t.getTime());
+    crosshair.setAttribute('x1', x.toFixed(1));
+    crosshair.setAttribute('x2', x.toFixed(1));
+    crosshair.style.opacity = '1';
+
+    const wrapRect = wrap.getBoundingClientRect();
+    const svgRect = svg.getBoundingClientRect();
+    const scale = svgRect.width / geo.W;
+
+    tooltip.style.left = `${svgRect.left - wrapRect.left + x * scale}px`;
+    tooltip.style.top = `${svgRect.top - wrapRect.top + geo.yFor(p.v) * scale}px`;
+    tooltip.querySelector('.chart-tooltip-date').textContent =
+      p.t.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    tooltip.querySelector('.chart-tooltip-value').textContent = `${p.v.toFixed(2)}%`;
+    tooltip.hidden = false;
+  }
+
+  function hide() {
+    crosshair.style.opacity = '0';
+    tooltip.hidden = true;
+  }
+
+  svg.addEventListener('pointermove', e => showFor(nearestPoint(e.clientX)));
+  svg.addEventListener('pointerleave', hide);
+  svg.addEventListener('focus', () => showFor(points[focusIdx]));
+  svg.addEventListener('blur', hide);
+  svg.addEventListener('keydown', e => {
+    if (e.key === 'ArrowLeft') {
+      focusIdx = Math.max(0, focusIdx - 1);
+      showFor(points[focusIdx]);
+      e.preventDefault();
+    } else if (e.key === 'ArrowRight') {
+      focusIdx = Math.min(points.length - 1, focusIdx + 1);
+      showFor(points[focusIdx]);
+      e.preventDefault();
+    }
+  });
+}
+
+// Groups whose columns include this field get a line chart of it over time.
+const CHARTED_FIELDS = [
+  { field: 'atta%', label: 'atta %', id: 'chart-atta-pct' },
+];
 
 let lastKnownSync = null;
 
 async function refresh() {
   const [groups, status] = await Promise.all([loadGroups(), loadStatus()]);
   const panelsEl = document.getElementById('panels');
+  const rowsByTable = {};
 
   const html = await Promise.all(groups.map(async g => {
     const rows = await loadRows(g.table);
+    rowsByTable[g.table] = rows;
     return renderPanel(g, rows);
   }));
 
-  panelsEl.innerHTML = html.join('');
+  const charts = [];
+  groups.forEach(g => {
+    CHARTED_FIELDS.forEach(spec => {
+      if (g.columns.includes(spec.field)) {
+        charts.push({ ...spec, rows: rowsByTable[g.table] });
+      }
+    });
+  });
+
+  const openTables = new Set(
+    Array.from(panelsEl.querySelectorAll('details.panel[open]')).map(d => d.dataset.table)
+  );
+
+  panelsEl.innerHTML = html.join('') + charts.map(c => renderChart(c.rows, c.field, c.label, c.id)).join('');
+
+  panelsEl.querySelectorAll('details.panel').forEach(d => {
+    if (openTables.has(d.dataset.table)) d.open = true;
+  });
+
+  charts.forEach(c => {
+    const points = toChartPoints(c.rows, c.field);
+    if (points.length >= 2) initChartInteraction(c.id, points);
+  });
 
   lastKnownSync = status ? status.last_synced_at : null;
   const lastCheckedEl = document.getElementById('last-checked');
